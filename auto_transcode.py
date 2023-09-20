@@ -789,30 +789,10 @@ try:
     os.remove(os.path.join(dest_dir, "check.tmp"))
 except:
     print("Can't write to destination directory - please check your command line "
-          "or config file, and if it is correct, make sure it's writable by "
-          "root/sudo/admin accounts.")
+          "or config file, and if it is correct, make sure it's writable")
     quit()
 
 
-# Check to see if we have elevated privileges.
-# Hat tip: "tahoar" at https://stackoverflow.com/questions/2946746/
-if os.name == 'nt':
-    try:
-        # Try to pull a directory listing of the Windows TEMP directory, which
-        # requires administrator rights.
-        temp = os.listdir(os.sep.join([os.environ.get('SystemRoot','C:\\windows'),'temp']))
-    except:
-        print("This script must be run with elevated privileges. Aborting.")
-        quit()
-
-else:
-    # Check to see if the current users is in the sudoers list and running the
-    # script as root.
-    #
-    # NOTE: This will require "sudo" even when running in a root shell!
-    if (not 'SUDO_USER' in os.environ) or (os.geteuid() != 0):
-        print("This script must be run with elevated privileges. Aborting.")
-        quit()
 
 
 # Candidate file list
@@ -986,36 +966,6 @@ def progress_bar(percentage):
     return bar_text
 
 
-# Helper function - check to see if a file is being used by another process.
-def file_is_in_use(file):
-
-    # We'll take one of two approaches to this, depending on the platform.
-
-    if os.name == 'nt':
-
-        # For Windows, we'll try to rename the file to the same name. If it
-        # fails with an error, e.g., access-denied, something's working on/with
-        # the file.
-        try:
-            os.rename(file, file)
-            return False
-        except:
-            return True
-
-    else:
-
-        # For Linux, we'll invoke "fuser" with the "-u" switch to see what
-        # users are accessing the file.
-        is_file_open = subprocess.Popen(
-            ['fuser -u "' + os.path.join(source_dir, file) + '"'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            universal_newlines=False,
-            shell=True,
-        )
-        file_users = is_file_open.stdout.read().decode("utf8", errors="replace").strip()
-
-        return (file_users != "")
 
 
 # Start the log...
@@ -1097,207 +1047,199 @@ try:
                           . format(file), "INFO")
 
 
-                # Check to see if any process has the file open. If no users
-                # have a claim on the file, let's do things with/to it.
-                if not file_is_in_use(file):
+                # Note in the log that the file will be transcoded.
+                write_log("  Handing over to FFMPEG for transcode...", "INFO")
 
-                    # Note in the log that the file will be transcoded.
-                    write_log("  Handing over to FFMPEG for transcode...", "INFO")
+                # Clear a var for progress monitoring
+                total_dur = None
 
-                    # Clear a var for progress monitoring
-                    total_dur = None
+                # Prepare to make a copy of the command line list for this
+                # file.
+                this_cmdline.clear()
 
-                    # Prepare to make a copy of the command line list for this
-                    # file.
-                    this_cmdline.clear()
+                # Start with ffmpeg itself.
+                this_cmdline.append(ffmpeg_location)
 
-                    # Start with ffmpeg itself.
-                    this_cmdline.append(ffmpeg_location)
-
-                    # Split off the filename into root name and extension
-                    # (we don't care about the extension).
-                    file_name, _ = os.path.splitext(file)
+                # Split off the filename into root name and extension
+                # (we don't care about the extension).
+                file_name, _ = os.path.splitext(file)
 
 
-                    # Build the command line by performing token replacement as
-                    # required.
-                    for entry in cmdline:
+                # Build the command line by performing token replacement as
+                # required.
+                for entry in cmdline:
 
-                        #entry = entry.replace("%FFMPEG%", ffmpeg_location)
-                        entry = entry.replace("%SOURCEFILE%", '"' + os.path.join(source_dir, file) + '"')
-                        entry = entry.replace("%DESTFILE%", '"' + os.path.join(dest_dir, file_name + "." + new_ext) + '"')
-                        entry = entry.replace("%SPATH%", source_dir)
-                        entry = entry.replace("%DPATH%", dest_dir)
-                        entry = entry.replace("%NEWEXT%", new_ext)
+                    #entry = entry.replace("%FFMPEG%", ffmpeg_location)
+                    entry = entry.replace("%SOURCEFILE%", '"' + os.path.join(source_dir, file) + '"')
+                    entry = entry.replace("%DESTFILE%", '"' + os.path.join(dest_dir, file_name + "." + new_ext) + '"')
+                    entry = entry.replace("%SPATH%", source_dir)
+                    entry = entry.replace("%DPATH%", dest_dir)
+                    entry = entry.replace("%NEWEXT%", new_ext)
 
-                        this_cmdline.append(entry)
+                    this_cmdline.append(entry)
 
-                    try:
+                try:
 
-                        # Clear the progress percentage variables.
-                        prog_pct = 0
-                        last_prog_pct = 0
+                    # Clear the progress percentage variables.
+                    prog_pct = 0
+                    last_prog_pct = 0
 
-                        # Reset the throbber step var.
-                        throbber_step = 0
+                    # Reset the throbber step var.
+                    throbber_step = 0
 
-                        # Get the current time for estimating remaining time.
-                        start_time = datetime.datetime.now()
+                    # Get the current time for estimating remaining time.
+                    start_time = datetime.datetime.now()
 
 
-                        # Open a log file if debug mode is enabled.
+                    # Open a log file if debug mode is enabled.
+                    if save_ffmpeg_output == True:
+                        f_log = open(os.path.join(path, "ffmpeg.log"), 'a')
+
+                        # Start by writing the command line to the
+                        # log, just in case inspecting it is needed.
+                        f_log.write('Command line:\n')
+                        f_log.write(" " . join(this_cmdline) + '\n\n')
+
+                    # Launch ffmpeg
+                    ffmpeg = subprocess.Popen(
+                        " " . join(this_cmdline),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        universal_newlines=False,
+                        shell=True,
+                    )
+
+                    # Loop until ffmpeg finishes.
+                    while True:
+
+                        # Grab a line of output from ffmpeg.
+                        line = ffmpeg.stdout.readline().decode("utf8", errors="replace").strip()
+
+                        # If the line is empty and poll() is no longer None,
+                        # we're done.
+                        if line == "" and ffmpeg.poll() is not None:
+                            break                                
+
+                        # Echo the line of text to the log.
                         if save_ffmpeg_output == True:
-                            f_log = open(os.path.join(path, "ffmpeg.log"), 'a')
+                            f_log.write(line.strip() + '\n')
 
-                            # Start by writing the command line to the
-                            # log, just in case inspecting it is needed.
-                            f_log.write('Command line:\n')
-                            f_log.write(" " . join(this_cmdline) + '\n\n')
+                        # Check for progress info and derive a percent
+                        # value of the transcode progress.
+                        # Hat tip: Werner Robitza :: https://gist.github.com/slhck
+                        if not total_dur and dur_regex.search(line):
+                            total_dur = dur_regex.search(line).groupdict()
+                            total_dur = to_ms(**total_dur)
+                            continue
+                        if total_dur:
+                            result = time_regex.search(line)
+                            if result:
+                                elapsed_time = to_ms(**result.groupdict())
+                                prog_pct = (elapsed_time / total_dur) * 100
 
-                        # Launch ffmpeg
-                        ffmpeg = subprocess.Popen(
-                            " " . join(this_cmdline),
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            universal_newlines=False,
-                            shell=True,
-                        )
-
-                        # Loop until ffmpeg finishes.
-                        while True:
-
-                            # Grab a line of output from ffmpeg.
-                            line = ffmpeg.stdout.readline().decode("utf8", errors="replace").strip()
-
-                            # If the line is empty and poll() is no longer None,
-                            # we're done.
-                            if line == "" and ffmpeg.poll() is not None:
-                                break                                
-
-                            # Echo the line of text to the log.
-                            if save_ffmpeg_output == True:
-                                f_log.write(line.strip() + '\n')
-
-                            # Check for progress info and derive a percent
-                            # value of the transcode progress.
-                            # Hat tip: Werner Robitza :: https://gist.github.com/slhck
-                            if not total_dur and dur_regex.search(line):
-                                total_dur = dur_regex.search(line).groupdict()
-                                total_dur = to_ms(**total_dur)
-                                continue
-                            if total_dur:
-                                result = time_regex.search(line)
-                                if result:
-                                    elapsed_time = to_ms(**result.groupdict())
-                                    prog_pct = (elapsed_time / total_dur) * 100
-
-                            # Update the progress, but only if it's changed.
-                            if (prog_pct != last_prog_pct):
-                                progress_bar_text = ("\r{}"
-                                                     . format(progress_bar(prog_pct)))
-                                sys.stdout.write(progress_bar_text)
-                                sys.stdout.flush()
-                                last_prog_pct = prog_pct
+                        # Update the progress, but only if it's changed.
+                        if (prog_pct != last_prog_pct):
+                            progress_bar_text = ("\r{}"
+                                                 . format(progress_bar(prog_pct)))
+                            sys.stdout.write(progress_bar_text)
+                            sys.stdout.flush()
+                            last_prog_pct = prog_pct
 
 
-                        # Check for a non-zero return code (error) from ffmpeg.
-                        if ffmpeg.returncode != 0:
-                            if save_ffmpeg_output == True:
-                                write_log("  Transcode failed. Check the ffmpeg"
-                                          " output log for more information.",
-                                          "ERROR")
-
-                            else:
-                                write_log("  Transcode failed. Enable ffmpeg "
-                                          "output logging with -flog and retry "
-                                          "for more information.",
-                                          "ERROR")
-
-                            # Quit so the transcode failure can be investigated.
-                            sys.exit(0)
-
-
-                        # Get the current time, then the difference from start.
-                        current_time = datetime.datetime.now()
-                        time_diff = current_time - start_time
-
-                        # Create a blank variable for the total time the transcode
-                        # took.
-                        elapsed_time = ''
-
-                        # Break the time difference down into days/hours/mins/secs,
-                        # and build display text based on the results.
-                        (days, remainder) = divmod(time_diff.total_seconds(), 86400)
-                        (hours, remainder) = divmod(remainder, 3600)
-                        (minutes, seconds) = divmod(remainder, 60)   
-                        days = int(days)
-                        hours = int(hours)
-                        minutes = int(minutes)
-                        seconds = int(seconds)
-                        if time_diff.total_seconds() > 86400:
-                            elapsed_time = ("{}:{:02d}:{:02d}:{:02d}"
-                                              . format(days, hours, minutes, seconds))
-                        elif time_diff.total_seconds() > 3600:
-                            elapsed_time = ("{}:{:02d}:{:02d}"
-                                              . format(hours, minutes, seconds))
-                        elif time_diff.total_seconds() > 60:
-                            elapsed_time = "00:{:02d}:{:02d}" . format(minutes, seconds)
-                        else:        
-                            elapsed_time = "{}s" . format(seconds)
-
-
-                        # Write a little bit of whitespace to the log file
-                        # and close it.
+                    # Check for a non-zero return code (error) from ffmpeg.
+                    if ffmpeg.returncode != 0:
                         if save_ffmpeg_output == True:
-                            f_log.write('\n\n\n')
-                            f_log.close()
-
-
-                        # Transcode complete!
-                        sys.stdout.write('\n')
-                        sys.stdout.flush()
-                        write_log("  Transcode completed in {}."
-                                  . format(elapsed_time), "INFO")
-
-                        # Sleep 5 seconds for everything to settle.
-                        time.sleep(5)
-
-
-                    finally:
-                        # Move the file to storage if a storage directory
-                        # is provided. If not, rename the file.
-                        if storage_dir != '':
-
-                            # We'll be moving it.
-                            write_log("  Moving source file to dir '{}'..." . format(storage_dir), "INFO")
-
-                            # Do the thing!
-                            os.rename(os.path.join(source_dir, file),
-                                    os.path.join(storage_dir, file))
+                            write_log("  Transcode failed. Check the ffmpeg"
+                                      " output log for more information.",
+                                      "ERROR")
 
                         else:
-                            # We'll be renaming it.
-                            write_log("  Renaming source file...", "INFO")
+                            write_log("  Transcode failed. Enable ffmpeg "
+                                      "output logging with -flog and retry "
+                                      "for more information.",
+                                      "ERROR")
 
-                            # Do the thing!
-                            os.rename(os.path.join(source_dir, file),
-                                      os.path.join(source_dir, file + ".processed"))
-
-
-                        # Sleep 5 seconds for file moves/renames to
-                        # follow through.
-                        time.sleep(5)
-
-                        # Aaaaand done.
-                        write_log("  Processing complete.", "INFO")
-
-                        # Pad out the log with an empty line.
-                        write_log("", "INFO")
+                        # Quit so the transcode failure can be investigated.
+                        sys.exit(0)
 
 
-                else:
-                    # Note in the log that this is an ongoing observation.
-                    write_log(" File is still in use or being transferred - skipping for now...", "INFO")
+                    # Get the current time, then the difference from start.
+                    current_time = datetime.datetime.now()
+                    time_diff = current_time - start_time
+
+                    # Create a blank variable for the total time the transcode
+                    # took.
+                    elapsed_time = ''
+
+                    # Break the time difference down into days/hours/mins/secs,
+                    # and build display text based on the results.
+                    (days, remainder) = divmod(time_diff.total_seconds(), 86400)
+                    (hours, remainder) = divmod(remainder, 3600)
+                    (minutes, seconds) = divmod(remainder, 60)
+                    days = int(days)
+                    hours = int(hours)
+                    minutes = int(minutes)
+                    seconds = int(seconds)
+                    if time_diff.total_seconds() > 86400:
+                        elapsed_time = ("{}:{:02d}:{:02d}:{:02d}"
+                                          . format(days, hours, minutes, seconds))
+                    elif time_diff.total_seconds() > 3600:
+                        elapsed_time = ("{}:{:02d}:{:02d}"
+                                          . format(hours, minutes, seconds))
+                    elif time_diff.total_seconds() > 60:
+                        elapsed_time = "00:{:02d}:{:02d}" . format(minutes, seconds)
+                    else:        
+                        elapsed_time = "{}s" . format(seconds)
+
+
+                    # Write a little bit of whitespace to the log file
+                    # and close it.
+                    if save_ffmpeg_output == True:
+                        f_log.write('\n\n\n')
+                        f_log.close()
+
+
+                    # Transcode complete!
+                    sys.stdout.write('\n')
+                    sys.stdout.flush()
+                    write_log("  Transcode completed in {}."
+                              . format(elapsed_time), "INFO")
+
+                    # Sleep 5 seconds for everything to settle.
+                    time.sleep(5)
+
+
+                finally:
+                    # Move the file to storage if a storage directory
+                    # is provided. If not, rename the file.
+                    if storage_dir != '':
+
+                        # We'll be moving it.
+                        write_log("  Moving source file to dir '{}'..." . format(storage_dir), "INFO")
+
+                        # Do the thing!
+                        os.rename(os.path.join(source_dir, file),
+                                os.path.join(storage_dir, file))
+
+                    else:
+                        # We'll be renaming it.
+                        write_log("  Renaming source file...", "INFO")
+
+                        # Do the thing!
+                        os.rename(os.path.join(source_dir, file),
+                                  os.path.join(source_dir, file + ".processed"))
+
+
+                    # Sleep 5 seconds for file moves/renames to
+                    # follow through.
+                    time.sleep(5)
+
+                    # Aaaaand done.
+                    write_log("  Processing complete.", "INFO")
+
+                    # Pad out the log with an empty line.
+                    write_log("", "INFO")
+
 
 
             # Throw a little time delay into the iteration.
